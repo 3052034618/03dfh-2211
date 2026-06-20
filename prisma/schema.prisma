@@ -1,0 +1,138 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Container {
+  id           String    @id @default(uuid())
+  containerNo  String    @unique
+  cargoType    String
+  origin       String
+  destination  String
+  currentRoute String?
+  driverId     String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  deviceData   DeviceData[]
+  alerts       Alert[]
+  rules        AlertRule[]
+}
+
+model AlertRule {
+  id              String      @id @default(uuid())
+  name            String
+  cargoType       String
+  alertType       String
+  alertLevel      String
+  enabled         Boolean     @default(true)
+
+  minValue        Float?
+  maxValue        Float?
+  allowedDuration Int?
+  tolerance       Float?
+
+  description     String?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  containers      Container[]
+}
+
+model DeviceData {
+  id            String   @id @default(uuid())
+  containerId   String
+  timestamp     DateTime @default(now())
+
+  temperature   Float?
+  humidity      Float?
+  doorOpen      Boolean?
+  powerStatus   Boolean?
+  latitude      Float?
+  longitude     Float?
+  speed         Float?
+
+  rawPayload    String?
+  createdAt     DateTime @default(now())
+
+  container     Container @relation(fields: [containerId], references: [id])
+}
+
+model Alert {
+  id             String       @id @default(uuid())
+  containerId    String
+  alertType      String
+  alertLevel     String
+  status         String       @default("ACTIVE")
+
+  startTime      DateTime     @default(now())
+  endTime        DateTime?
+  lastNotifyTime DateTime?
+
+  currentValue   Float?
+  threshold      String?
+  durationSec    Int          @default(0)
+
+  suggestion     String?
+  escalationStep Int          @default(0)
+
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  container      Container    @relation(fields: [containerId], references: [id])
+  notifications  Notification[]
+  receipts       Receipt[]
+}
+
+model Notification {
+  id               String   @id @default(uuid())
+  alertId          String
+  recipientRole    String
+  recipientId      String
+  recipientName    String
+  recipientPhone   String?
+  channel          String
+  status           String   @default("PENDING")
+
+  content          String
+  receiptLink      String?
+
+  sentAt           DateTime?
+  acknowledgedAt   DateTime?
+
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  alert            Alert    @relation(fields: [alertId], references: [id])
+  receipts         Receipt[]
+}
+
+model Receipt {
+  id              String        @id @default(uuid())
+  alertId         String
+  notificationId  String?
+  handlerId       String
+  handlerName     String
+  status          String
+  remark          String?
+
+  handledAt       DateTime      @default(now())
+
+  alert           Alert         @relation(fields: [alertId], references: [id])
+  notification    Notification? @relation(fields: [notificationId], references: [id])
+}
+
+model Contact {
+  id        String   @id @default(uuid())
+  name      String
+  role      String
+  phone     String
+  wechatId  String?
+  email     String?
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now())
+}

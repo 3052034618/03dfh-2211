@@ -1,0 +1,159 @@
+### 冷藏集装箱异常通知服务 API 测试文件
+
+@baseUrl = http://localhost:3000/api
+
+### 1. 查询告警规则列表
+GET {{baseUrl}}/alert-rules?enabled=true
+Content-Type: application/json
+
+### 2. 按货类查询规则 (疫苗 VACCINE)
+GET {{baseUrl}}/alert-rules?cargoType=VACCINE
+Content-Type: application/json
+
+### 3. 创建设备数据上报 - 疫苗箱温度异常 (应触发告警)
+POST {{baseUrl}}/device-data/report
+Content-Type: application/json
+
+{
+  "containerNo": "REEFER001",
+  "temperature": 10.5,
+  "humidity": 45,
+  "doorOpen": false,
+  "powerStatus": true,
+  "latitude": 31.2304,
+  "longitude": 121.4737,
+  "speed": 65
+}
+
+### 4. 创建设备数据上报 - 疫苗箱开门 (应触发告警)
+POST {{baseUrl}}/device-data/report
+Content-Type: application/json
+
+{
+  "containerNo": "REEFER001",
+  "temperature": 5.0,
+  "doorOpen": true,
+  "powerStatus": true
+}
+
+### 5. 创建设备数据上报 - 冻品温度异常 (短时波动不应立即告警)
+POST {{baseUrl}}/device-data/report
+Content-Type: application/json
+
+{
+  "containerNo": "REEFER002",
+  "temperature": -15.0,
+  "humidity": 60,
+  "doorOpen": false,
+  "powerStatus": true
+}
+
+### 6. 创建设备数据上报 - 冻品开门 (短时开门不应告警)
+POST {{baseUrl}}/device-data/report
+Content-Type: application/json
+
+{
+  "containerNo": "REEFER002",
+  "temperature": -20.0,
+  "doorOpen": true,
+  "powerStatus": true
+}
+
+### 7. 创建设备数据上报 - 断电告警
+POST {{baseUrl}}/device-data/report
+Content-Type: application/json
+
+{
+  "containerNo": "REEFER003",
+  "temperature": 12.0,
+  "powerStatus": false
+}
+
+### 8. 查询告警列表
+GET {{baseUrl}}/alerts?status=ACTIVE
+Content-Type: application/json
+
+### 9. 获取告警统计
+GET {{baseUrl}}/alerts/stats
+Content-Type: application/json
+
+### 10. 查询通知列表
+GET {{baseUrl}}/notifications
+Content-Type: application/json
+
+### 11. 提交处置回执 - 已确认
+# 先从告警列表获取一个 alertId
+POST {{baseUrl}}/receipts
+Content-Type: application/json
+
+{
+  "alertId": "replace-with-alert-id",
+  "handlerId": "13800138001",
+  "handlerName": "张师傅",
+  "status": "CONFIRMED",
+  "remark": "已检查，正在处理"
+}
+
+### 12. 提交处置回执 - 误报
+POST {{baseUrl}}/receipts
+Content-Type: application/json
+
+{
+  "alertId": "replace-with-alert-id",
+  "handlerId": "13800138002",
+  "handlerName": "李调度",
+  "status": "FALSE_ALARM",
+  "remark": "传感器故障，已校准"
+}
+
+### 13. 提交处置回执 - 升级理赔
+POST {{baseUrl}}/receipts
+Content-Type: application/json
+
+{
+  "alertId": "replace-with-alert-id",
+  "handlerId": "13800138003",
+  "handlerName": "王客服",
+  "status": "ESCALATED",
+  "remark": "货物可能受损，申请理赔"
+}
+
+### 14. 查询回执列表
+GET {{baseUrl}}/receipts
+Content-Type: application/json
+
+### 15. 手动触发通知发送
+POST {{baseUrl}}/notifications/replace-with-alert-id/send
+Content-Type: application/json
+
+### 16. 手动升级告警
+POST {{baseUrl}}/notifications/replace-with-alert-id/escalate
+Content-Type: application/json
+
+### 17. 创建设备数据 - 恢复正常 (告警应自动解决)
+POST {{baseUrl}}/device-data/report
+Content-Type: application/json
+
+{
+  "containerNo": "REEFER001",
+  "temperature": 5.0,
+  "doorOpen": false,
+  "powerStatus": true
+}
+
+### 18. 创建新的告警规则
+POST {{baseUrl}}/alert-rules
+Content-Type: application/json
+
+{
+  "name": "测试规则-生鲜温度",
+  "cargoType": "FRESH_PRODUCE",
+  "alertType": "TEMPERATURE_HIGH",
+  "alertLevel": "WARNING",
+  "minValue": 0,
+  "maxValue": 10,
+  "allowedDuration": 300,
+  "tolerance": 1,
+  "description": "生鲜温度超过10℃，持续5分钟告警",
+  "enabled": true
+}
