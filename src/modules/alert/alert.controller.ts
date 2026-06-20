@@ -1,6 +1,6 @@
 import { Controller, Get, Param, Query, Patch, Body, Post } from '@nestjs/common';
 import { ApiTags, ApiOperation } from '@nestjs/swagger';
-import { AlertService } from './alert.service';
+import { AlertService, AlertDetail, TimelineEvent } from './alert.service';
 import { QueryAlertDto } from './dto/alert.dto';
 import { PaginationDto, PaginatedResponse } from '../../common/dto/pagination.dto';
 import { Alert } from '@prisma/client';
@@ -12,11 +12,11 @@ export class AlertController {
   constructor(private readonly alertService: AlertService) {}
 
   @Get()
-  @ApiOperation({ summary: '查询告警列表' })
+  @ApiOperation({ summary: '查询告警列表（含催办进度信息）' })
   findAll(
     @Query() query: QueryAlertDto,
     @Query() pagination: PaginationDto,
-  ): Promise<PaginatedResponse<Alert>> {
+  ): Promise<PaginatedResponse<Alert & { escalationInfo: any }>> {
     return this.alertService.findAll(query, pagination);
   }
 
@@ -27,14 +27,20 @@ export class AlertController {
   }
 
   @Get(':id')
-  @ApiOperation({ summary: '获取告警详情' })
-  findOne(@Param('id') id: string): Promise<Alert> {
+  @ApiOperation({ summary: '获取告警详情（含催办进度信息）' })
+  findOne(@Param('id') id: string): Promise<AlertDetail> {
     return this.alertService.findOne(id);
+  }
+
+  @Get(':id/timeline')
+  @ApiOperation({ summary: '获取告警催办进度时间线' })
+  getTimeline(@Param('id') id: string): Promise<TimelineEvent[]> {
+    return this.alertService.getTimeline(id);
   }
 
   @Patch(':id/close')
   @ApiOperation({ summary: '手动关闭告警' })
-  close(@Param('id') id: string, @Body() body?: { remark?: string }): Promise<Alert> {
+  close(@Param('id') id: string, @Body() body?: { remark?: string }): Promise<AlertDetail> {
     return this.alertService.close(id, body?.remark);
   }
 

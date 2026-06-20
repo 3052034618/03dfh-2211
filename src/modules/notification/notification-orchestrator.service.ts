@@ -53,7 +53,7 @@ export class NotificationOrchestratorService {
         alert,
         container,
         contact,
-        this.getChannelForRole(firstRole),
+        this.getChannelForRole(firstRole, alert),
         receiptLink,
         0,
       );
@@ -104,7 +104,7 @@ export class NotificationOrchestratorService {
         alert,
         container,
         contact,
-        this.getChannelForRole(nextRole),
+        this.getChannelForRole(nextRole, alert),
         receiptLink,
         nextStep,
         true,
@@ -246,7 +246,18 @@ export class NotificationOrchestratorService {
     };
   }
 
-  private getChannelForRole(role: RecipientRole): NotificationChannel {
+  private getChannelForRole(role: RecipientRole, alert?: Alert): NotificationChannel {
+    if (alert?.escalationChannels) {
+      try {
+        const channels = JSON.parse(alert.escalationChannels);
+        if (channels[role]) {
+          return channels[role] as NotificationChannel;
+        }
+      } catch {
+        // fall through to default
+      }
+    }
+
     switch (role) {
       case 'DRIVER':
         return 'SMS';
@@ -272,12 +283,11 @@ export class NotificationOrchestratorService {
   }
 
   async findPendingAlertsForEscalation(): Promise<Alert[]> {
-    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
+    const now = Date.now();
 
-    const alertsWithNoStopReceipt = await this.prisma.alert.findMany({
+    const activeAlerts = await this.prisma.alert.findMany({
       where: {
         status: { in: ['ACTIVE'] as AlertStatus[] },
-        lastNotifyTime: { lt: thirtyMinutesAgo },
         escalationStep: { lt: NOTIFICATION_ORDER.length - 1 },
         receipts: {
           none: {
@@ -287,6 +297,18 @@ export class NotificationOrchestratorService {
       },
     });
 
-    return alertsWithNoStopReceipt;
+    const pendingAlerts = activeAlerts.filter((alert) => {
+      if (!alert.lastNotifyTime) {
+        return false;
+      }
+      const intervalMs = (alert.escalationInterval || 1800) * 1000;
+      return now - alert.lastNotifyTime.getTime() >= intervalMs;
+    });
+
+    this.logger.debug(
+      `Found ${pendingAlerts.length} alerts pending escalation out of ${activeAlerts.length} active alerts`,
+    );
+
+    return pendingAlerts;
   }
 }

@@ -203,30 +203,31 @@ export class AlertEngineService {
 
   private checkTemperatureFluctuation(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.temperature !== undefined && d.temperature !== null);
-    if (validData.length < 2) return { triggered: false, alertType: 'TEMPERATURE_FLUCTUATION', durationSec: 0 };
+    if (validData.length < 3) return { triggered: false, alertType: 'TEMPERATURE_FLUCTUATION', durationSec: 0 };
 
     const tolerance = rule.tolerance || 0;
+    const windowSize = 5;
 
-    const isViolation = (d: DeviceData, idx: number, arr: DeviceData[]) => {
-      if (idx === 0) {
-        const temps = arr.slice(0, 5).map(x => x.temperature!).filter(x => x !== undefined);
-        if (temps.length < 2) return false;
-        const max = Math.max(...temps);
-        const min = Math.min(...temps);
-        return (max - min) >= tolerance;
+    const isFluctuating = (idx: number, arr: DeviceData[]): boolean => {
+      const end = Math.min(idx + windowSize, arr.length);
+      const windowTemps: number[] = [];
+      for (let i = idx; i < end; i++) {
+        if (arr[i].temperature !== undefined && arr[i].temperature !== null) {
+          windowTemps.push(arr[i].temperature!);
+        }
       }
-      return true;
+      if (windowTemps.length < 2) return false;
+      const max = Math.max(...windowTemps);
+      const min = Math.min(...windowTemps);
+      return (max - min) >= tolerance;
     };
-    const isNormal = (d: DeviceData, idx: number, arr: DeviceData[]) => {
-      if (idx === 0) {
-        const temps = arr.slice(0, 5).map(x => x.temperature!).filter(x => x !== undefined);
-        if (temps.length < 2) return true;
-        const max = Math.max(...temps);
-        const min = Math.min(...temps);
-        return (max - min) < tolerance;
-      }
-      return false;
+
+    const isStable = (idx: number, arr: DeviceData[]): boolean => {
+      return !isFluctuating(idx, arr);
     };
+
+    const isViolation = (d: DeviceData, idx: number, arr: DeviceData[]) => isFluctuating(idx, arr);
+    const isNormal = (d: DeviceData, idx: number, arr: DeviceData[]) => isStable(idx, arr);
 
     const { duration, segmentStart } = this.findTrueContinuousSegment(
       validData,
@@ -236,8 +237,9 @@ export class AlertEngineService {
       'TEMPERATURE_FLUCTUATION',
     );
 
-    const latestTemps = validData.slice(0, 10).map(d => d.temperature!).filter(t => t !== undefined);
-    const fluctuation = latestTemps.length >= 2
+    const latestWindow = validData.slice(0, Math.min(windowSize, validData.length));
+    const latestTemps = latestWindow.map(d => d.temperature!).filter(t => t !== undefined);
+    const currentFluctuation = latestTemps.length >= 2
       ? Math.max(...latestTemps) - Math.min(...latestTemps)
       : 0;
 
@@ -246,7 +248,7 @@ export class AlertEngineService {
     return {
       triggered,
       alertType: 'TEMPERATURE_FLUCTUATION',
-      currentValue: Math.round(fluctuation * 10) / 10,
+      currentValue: Math.round(currentFluctuation * 10) / 10,
       threshold: `波动 > ${tolerance}℃`,
       durationSec: duration,
       segmentStart,
@@ -593,6 +595,8 @@ export class AlertEngineService {
         durationSec: checkResult.durationSec,
         suggestion,
         abnormalSince: checkResult.segmentStart || new Date(),
+        escalationInterval: rule.escalationInterval || 1800,
+        escalationChannels: rule.escalationChannels || null,
       },
     });
   }

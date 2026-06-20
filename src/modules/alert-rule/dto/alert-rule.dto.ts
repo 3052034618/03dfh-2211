@@ -5,6 +5,8 @@ const CARGO_TYPES = ['FROZEN', 'REFRIGERATED', 'VACCINE', 'PHARMACEUTICAL', 'FRE
 const ALERT_TYPES = ['TEMPERATURE_HIGH', 'TEMPERATURE_LOW', 'TEMPERATURE_FLUCTUATION', 'DOOR_OPEN', 'POWER_FAILURE', 'POSITION_DEVIATION', 'HUMIDITY_HIGH', 'HUMIDITY_LOW'];
 const ALERT_LEVELS = ['INFO', 'WARNING', 'CRITICAL'];
 const DEVIATION_TYPES = ['MAX_DISTANCE', 'ROUTE_CORRIDOR'];
+const CHANNELS = ['SMS', 'WECHAT_WORK', 'SYSTEM_MESSAGE', 'EMAIL'];
+const ROLES = ['DRIVER', 'DISPATCHER', 'CUSTOMER_SERVICE', 'MANAGER'];
 
 export class CreateAlertRuleDto {
   @ApiProperty({ description: '规则名称' })
@@ -54,6 +56,17 @@ export class CreateAlertRuleDto {
   @IsNumber()
   @Min(0)
   maxDeviationDistance?: number;
+
+  @ApiPropertyOptional({ description: '催办升级间隔（秒），默认1800秒（30分钟）' })
+  @IsOptional()
+  @IsNumber()
+  @Min(60)
+  escalationInterval?: number;
+
+  @ApiPropertyOptional({ description: '各角色通知渠道配置(JSON)，如 {"DRIVER":"SMS","DISPATCHER":"WECHAT_WORK"}' })
+  @IsOptional()
+  @IsString()
+  escalationChannels?: string;
 
   @ApiPropertyOptional({ description: '规则描述' })
   @IsOptional()
@@ -118,6 +131,17 @@ export class UpdateAlertRuleDto {
   @IsNumber()
   @Min(0)
   maxDeviationDistance?: number;
+
+  @ApiPropertyOptional({ description: '催办升级间隔（秒）' })
+  @IsOptional()
+  @IsNumber()
+  @Min(60)
+  escalationInterval?: number;
+
+  @ApiPropertyOptional({ description: '各角色通知渠道配置(JSON)' })
+  @IsOptional()
+  @IsString()
+  escalationChannels?: string;
 
   @ApiPropertyOptional({ description: '规则描述' })
   @IsOptional()

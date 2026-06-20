@@ -40,6 +40,9 @@ model AlertRule {
   deviationType          String?
   maxDeviationDistance   Float?
 
+  escalationInterval Int?
+  escalationChannels String?
+
   description     String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
@@ -85,6 +88,8 @@ model Alert {
   suggestion       String?
   escalationStep   Int          @default(0)
   currentNotifyRole String      @default("DRIVER")
+  escalationInterval Int        @default(1800)
+  escalationChannels String?
 
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
