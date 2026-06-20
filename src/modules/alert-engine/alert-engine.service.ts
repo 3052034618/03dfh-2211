@@ -8,12 +8,13 @@ import {
 } from '../../common/types/alert.types';
 import * as dayjs from 'dayjs';
 
-interface RuleCheckResult {
+export interface RuleCheckResult {
   triggered: boolean;
   alertType: AlertType;
   currentValue?: number;
   threshold?: string;
   durationSec: number;
+  segmentStart?: Date;
 }
 
 interface ContainerContext {
@@ -28,22 +29,30 @@ interface Waypoint {
   lng: number;
 }
 
+export interface ProcessDeviceDataResult {
+  newAlerts: Alert[];
+  updatedAlerts: Alert[];
+}
+
 @Injectable()
 export class AlertEngineService {
   private readonly logger = new Logger(AlertEngineService.name);
 
   constructor(private prisma: PrismaService) {}
 
-  async processDeviceData(containerNo: string, data: Partial<DeviceData>): Promise<Alert[]> {
+  async processDeviceData(containerNo: string, data: Partial<DeviceData>): Promise<ProcessDeviceDataResult> {
     this.logger.debug(`Processing device data for container: ${containerNo}`);
 
     const ctx = await this.buildContext(containerNo);
     if (!ctx) {
       this.logger.warn(`Container not found: ${containerNo}`);
-      return [];
+      return { newAlerts: [], updatedAlerts: [] };
     }
 
-    const triggeredAlerts: Alert[] = [];
+    const result: ProcessDeviceDataResult = {
+      newAlerts: [],
+      updatedAlerts: [],
+    };
 
     for (const rule of ctx.rules) {
       if (!ALERT_TYPE_VALUES.includes(rule.alertType as AlertType)) {
@@ -55,14 +64,19 @@ export class AlertEngineService {
       if (checkResult.triggered) {
         const alert = await this.handleTriggeredRule(ctx, rule, checkResult, data);
         if (alert) {
-          triggeredAlerts.push(alert);
+          const isNew = ctx.activeAlerts.every(a => a.id !== alert.id);
+          if (isNew) {
+            result.newAlerts.push(alert);
+          } else {
+            result.updatedAlerts.push(alert);
+          }
         }
       } else {
         await this.resolveAlertIfRecovered(ctx, rule, data);
       }
     }
 
-    return triggeredAlerts;
+    return result;
   }
 
   private async buildContext(containerNo: string): Promise<ContainerContext | null> {
@@ -134,14 +148,18 @@ export class AlertEngineService {
     if (validData.length === 0) return { triggered: false, alertType: 'TEMPERATURE_HIGH', durationSec: 0 };
 
     const threshold = rule.maxValue! + (rule.tolerance || 0);
-    const violatingData = validData.filter((d) => d.temperature! > threshold);
 
-    if (violatingData.length === 0) {
-      return { triggered: false, alertType: 'TEMPERATURE_HIGH', durationSec: 0 };
-    }
+    const isViolation = (d: DeviceData) => d.temperature! > threshold;
+    const isNormal = (d: DeviceData) => d.temperature! <= threshold;
 
-    const continuousViolatingData = this.findContinuousViolation(violatingData, ctx, 'TEMPERATURE_HIGH');
-    const duration = this.calculateContinuousDuration(continuousViolatingData, ctx, 'TEMPERATURE_HIGH');
+    const { continuousViolation, duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'TEMPERATURE_HIGH',
+    );
+
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -150,6 +168,7 @@ export class AlertEngineService {
       currentValue: validData[0].temperature ?? undefined,
       threshold: `> ${threshold}℃`,
       durationSec: duration,
+      segmentStart,
     };
   }
 
@@ -158,13 +177,18 @@ export class AlertEngineService {
     if (validData.length === 0) return { triggered: false, alertType: 'TEMPERATURE_LOW', durationSec: 0 };
 
     const threshold = rule.minValue! - (rule.tolerance || 0);
-    const violatingData = validData.filter((d) => d.temperature! < threshold);
 
-    if (violatingData.length === 0) {
-      return { triggered: false, alertType: 'TEMPERATURE_LOW', durationSec: 0 };
-    }
+    const isViolation = (d: DeviceData) => d.temperature! < threshold;
+    const isNormal = (d: DeviceData) => d.temperature! >= threshold;
 
-    const duration = this.calculateContinuousDuration(violatingData, ctx, 'TEMPERATURE_LOW');
+    const { continuousViolation, duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'TEMPERATURE_LOW',
+    );
+
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -173,6 +197,7 @@ export class AlertEngineService {
       currentValue: validData[0].temperature ?? undefined,
       threshold: `< ${threshold}℃`,
       durationSec: duration,
+      segmentStart,
     };
   }
 
@@ -180,24 +205,51 @@ export class AlertEngineService {
     const validData = data.filter((d) => d.temperature !== undefined && d.temperature !== null);
     if (validData.length < 2) return { triggered: false, alertType: 'TEMPERATURE_FLUCTUATION', durationSec: 0 };
 
-    const temps = validData.map((d) => d.temperature!);
-    const max = Math.max(...temps);
-    const min = Math.min(...temps);
-    const fluctuation = max - min;
+    const tolerance = rule.tolerance || 0;
 
-    if (fluctuation < (rule.tolerance || 0)) {
-      return { triggered: false, alertType: 'TEMPERATURE_FLUCTUATION', durationSec: 0 };
-    }
+    const isViolation = (d: DeviceData, idx: number, arr: DeviceData[]) => {
+      if (idx === 0) {
+        const temps = arr.slice(0, 5).map(x => x.temperature!).filter(x => x !== undefined);
+        if (temps.length < 2) return false;
+        const max = Math.max(...temps);
+        const min = Math.min(...temps);
+        return (max - min) >= tolerance;
+      }
+      return true;
+    };
+    const isNormal = (d: DeviceData, idx: number, arr: DeviceData[]) => {
+      if (idx === 0) {
+        const temps = arr.slice(0, 5).map(x => x.temperature!).filter(x => x !== undefined);
+        if (temps.length < 2) return true;
+        const max = Math.max(...temps);
+        const min = Math.min(...temps);
+        return (max - min) < tolerance;
+      }
+      return false;
+    };
 
-    const duration = this.calculateContinuousDuration(validData, ctx, 'TEMPERATURE_FLUCTUATION');
+    const { duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'TEMPERATURE_FLUCTUATION',
+    );
+
+    const latestTemps = validData.slice(0, 10).map(d => d.temperature!).filter(t => t !== undefined);
+    const fluctuation = latestTemps.length >= 2
+      ? Math.max(...latestTemps) - Math.min(...latestTemps)
+      : 0;
+
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
       triggered,
       alertType: 'TEMPERATURE_FLUCTUATION',
-      currentValue: fluctuation,
-      threshold: `波动 > ${rule.tolerance}℃`,
+      currentValue: Math.round(fluctuation * 10) / 10,
+      threshold: `波动 > ${tolerance}℃`,
       durationSec: duration,
+      segmentStart,
     };
   }
 
@@ -205,12 +257,17 @@ export class AlertEngineService {
     const validData = data.filter((d) => d.doorOpen !== undefined && d.doorOpen !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'DOOR_OPEN', durationSec: 0 };
 
-    const openData = validData.filter((d) => d.doorOpen === true);
-    if (openData.length === 0) {
-      return { triggered: false, alertType: 'DOOR_OPEN', durationSec: 0 };
-    }
+    const isViolation = (d: DeviceData) => d.doorOpen === true;
+    const isNormal = (d: DeviceData) => d.doorOpen === false;
 
-    const duration = this.calculateContinuousDuration(openData, ctx, 'DOOR_OPEN');
+    const { duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'DOOR_OPEN',
+    );
+
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -219,6 +276,7 @@ export class AlertEngineService {
       currentValue: 1,
       threshold: `开门时长 > ${rule.allowedDuration}秒`,
       durationSec: duration,
+      segmentStart,
     };
   }
 
@@ -226,12 +284,17 @@ export class AlertEngineService {
     const validData = data.filter((d) => d.powerStatus !== undefined && d.powerStatus !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'POWER_FAILURE', durationSec: 0 };
 
-    const failureData = validData.filter((d) => d.powerStatus === false);
-    if (failureData.length === 0) {
-      return { triggered: false, alertType: 'POWER_FAILURE', durationSec: 0 };
-    }
+    const isViolation = (d: DeviceData) => d.powerStatus === false;
+    const isNormal = (d: DeviceData) => d.powerStatus === true;
 
-    const duration = this.calculateContinuousDuration(failureData, ctx, 'POWER_FAILURE');
+    const { duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'POWER_FAILURE',
+    );
+
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -240,6 +303,7 @@ export class AlertEngineService {
       currentValue: 0,
       threshold: '电源断开',
       durationSec: duration,
+      segmentStart,
     };
   }
 
@@ -252,13 +316,18 @@ export class AlertEngineService {
     const maxDistance = rule.maxDeviationDistance || 5;
     const deviationType = rule.deviationType || 'MAX_DISTANCE';
 
-    const deviatedData = validData.filter((d) => {
+    const isViolation = (d: DeviceData) => {
       return this.isPositionDeviated(d.latitude!, d.longitude!, ctx.container, maxDistance, deviationType);
-    });
+    };
+    const isNormal = (d: DeviceData) => !isViolation(d);
 
-    if (deviatedData.length === 0) {
-      return { triggered: false, alertType: 'POSITION_DEVIATION', durationSec: 0 };
-    }
+    const { duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'POSITION_DEVIATION',
+    );
 
     const distance = this.calculateDistanceToRoute(
       validData[0].latitude!,
@@ -266,7 +335,6 @@ export class AlertEngineService {
       ctx.container,
     );
 
-    const duration = this.calculateContinuousDuration(deviatedData, ctx, 'POSITION_DEVIATION');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -275,6 +343,7 @@ export class AlertEngineService {
       currentValue: Math.round(distance * 10) / 10,
       threshold: `偏离路线 > ${maxDistance}km (${deviationType === 'ROUTE_CORRIDOR' ? '路线走廊' : '最大距离'}判断)`,
       durationSec: duration,
+      segmentStart,
     };
   }
 
@@ -283,13 +352,18 @@ export class AlertEngineService {
     if (validData.length === 0) return { triggered: false, alertType: 'HUMIDITY_HIGH', durationSec: 0 };
 
     const threshold = rule.maxValue!;
-    const violatingData = validData.filter((d) => d.humidity! > threshold);
 
-    if (violatingData.length === 0) {
-      return { triggered: false, alertType: 'HUMIDITY_HIGH', durationSec: 0 };
-    }
+    const isViolation = (d: DeviceData) => d.humidity! > threshold;
+    const isNormal = (d: DeviceData) => d.humidity! <= threshold;
 
-    const duration = this.calculateContinuousDuration(violatingData, ctx, 'HUMIDITY_HIGH');
+    const { duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'HUMIDITY_HIGH',
+    );
+
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -298,6 +372,7 @@ export class AlertEngineService {
       currentValue: validData[0].humidity ?? undefined,
       threshold: `> ${threshold}%`,
       durationSec: duration,
+      segmentStart,
     };
   }
 
@@ -306,13 +381,18 @@ export class AlertEngineService {
     if (validData.length === 0) return { triggered: false, alertType: 'HUMIDITY_LOW', durationSec: 0 };
 
     const threshold = rule.minValue!;
-    const violatingData = validData.filter((d) => d.humidity! < threshold);
 
-    if (violatingData.length === 0) {
-      return { triggered: false, alertType: 'HUMIDITY_LOW', durationSec: 0 };
-    }
+    const isViolation = (d: DeviceData) => d.humidity! < threshold;
+    const isNormal = (d: DeviceData) => d.humidity! >= threshold;
 
-    const duration = this.calculateContinuousDuration(violatingData, ctx, 'HUMIDITY_LOW');
+    const { duration, segmentStart } = this.findTrueContinuousSegment(
+      validData,
+      isViolation,
+      isNormal,
+      ctx,
+      'HUMIDITY_LOW',
+    );
+
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -321,6 +401,56 @@ export class AlertEngineService {
       currentValue: validData[0].humidity ?? undefined,
       threshold: `< ${threshold}%`,
       durationSec: duration,
+      segmentStart,
+    };
+  }
+
+  private findTrueContinuousSegment(
+    data: DeviceData[],
+    isViolation: (d: DeviceData, idx: number, arr: DeviceData[]) => boolean,
+    isNormal: (d: DeviceData, idx: number, arr: DeviceData[]) => boolean,
+    ctx: ContainerContext,
+    alertType: AlertType,
+  ): { continuousViolation: DeviceData[]; duration: number; segmentStart: Date } {
+    const existingAlert = ctx.activeAlerts.find((a) => a.alertType === alertType);
+    const now = dayjs();
+
+    for (let i = 0; i < data.length; i++) {
+      if (isNormal(data[i], i, data)) {
+        const segment = data.slice(0, i);
+        const violationsInSegment = segment.filter((d, idx) => isViolation(d, idx, segment));
+
+        if (violationsInSegment.length === 0) {
+          return { continuousViolation: [], duration: 0, segmentStart: now.toDate() };
+        }
+
+        const segmentStart = dayjs(segment[segment.length - 1].timestamp);
+        return {
+          continuousViolation: violationsInSegment,
+          duration: now.diff(segmentStart, 'second'),
+          segmentStart: segmentStart.toDate(),
+        };
+      }
+    }
+
+    const allViolations = data.filter((d, idx) => isViolation(d, idx, data));
+    if (allViolations.length === 0) {
+      return { continuousViolation: [], duration: 0, segmentStart: now.toDate() };
+    }
+
+    if (existingAlert?.abnormalSince) {
+      return {
+        continuousViolation: allViolations,
+        duration: now.diff(dayjs(existingAlert.abnormalSince), 'second'),
+        segmentStart: existingAlert.abnormalSince,
+      };
+    }
+
+    const segmentStart = dayjs(allViolations[allViolations.length - 1].timestamp);
+    return {
+      continuousViolation: allViolations,
+      duration: now.diff(segmentStart, 'second'),
+      segmentStart: segmentStart.toDate(),
     };
   }
 
@@ -416,29 +546,6 @@ export class AlertEngineService {
     return deg * (Math.PI / 180);
   }
 
-  private calculateContinuousDuration(
-    violatingData: DeviceData[],
-    ctx: ContainerContext,
-    alertType: AlertType,
-  ): number {
-    if (violatingData.length === 0) return 0;
-
-    const existingAlert = ctx.activeAlerts.find((a) => a.alertType === alertType);
-    const abnormalSince = existingAlert?.abnormalSince;
-
-    if (abnormalSince) {
-      return dayjs().diff(dayjs(abnormalSince), 'second');
-    }
-
-    const now = dayjs();
-    const oldest = dayjs(violatingData[violatingData.length - 1].timestamp);
-    return now.diff(oldest, 'second');
-  }
-
-  private findContinuousViolation(violatingData: DeviceData[], ctx: ContainerContext, alertType: AlertType): DeviceData[] {
-    return violatingData;
-  }
-
   private async handleTriggeredRule(
     ctx: ContainerContext,
     rule: AlertRule,
@@ -450,6 +557,10 @@ export class AlertEngineService {
     const suggestion = this.generateSuggestion(checkResult.alertType);
 
     if (existingAlert) {
+      this.logger.debug(
+        `Updating existing alert ${existingAlert.id} for container ${ctx.container.containerNo}: ${rule.alertType}, duration=${checkResult.durationSec}s`,
+      );
+
       const updateData: any = {
         durationSec: checkResult.durationSec,
         currentValue: checkResult.currentValue ?? null,
@@ -457,8 +568,8 @@ export class AlertEngineService {
         updatedAt: new Date(),
       };
 
-      if (!existingAlert.abnormalSince) {
-        updateData.abnormalSince = existingAlert.startTime;
+      if (!existingAlert.abnormalSince && checkResult.segmentStart) {
+        updateData.abnormalSince = checkResult.segmentStart;
       }
 
       return this.prisma.alert.update({
@@ -468,7 +579,7 @@ export class AlertEngineService {
     }
 
     this.logger.log(
-      `New alert triggered for container ${ctx.container.containerNo}: ${rule.alertType}`,
+      `New alert triggered for container ${ctx.container.containerNo}: ${rule.alertType}, duration=${checkResult.durationSec}s`,
     );
 
     return this.prisma.alert.create({
@@ -481,7 +592,7 @@ export class AlertEngineService {
         threshold: checkResult.threshold ?? null,
         durationSec: checkResult.durationSec,
         suggestion,
-        abnormalSince: new Date(),
+        abnormalSince: checkResult.segmentStart || new Date(),
       },
     });
   }
@@ -497,7 +608,7 @@ export class AlertEngineService {
 
     if (activeAlert) {
       this.logger.log(
-        `Alert condition recovered for container ${ctx.container.containerNo}: ${rule.alertType}, resetting abnormalSince`,
+        `Alert condition recovered for container ${ctx.container.containerNo}: ${rule.alertType}, resetting abnormalSince and marking RESOLVED`,
       );
 
       await this.prisma.alert.update({

@@ -1,10 +1,10 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
 import { AlertEngineService } from '../alert-engine/alert-engine.service';
 import { NotificationOrchestratorService, NotificationResult } from '../notification/notification-orchestrator.service';
 import { ReportDeviceDataDto } from './dto/device-data.dto';
 import { PaginationDto, buildPaginatedResponse, PaginatedResponse } from '../../common/dto/pagination.dto';
-import { DeviceData, Alert, Notification } from '@prisma/client';
+import { DeviceData, Alert } from '@prisma/client';
 
 export interface DeviceDataReportResult {
   data: DeviceData;
@@ -14,6 +14,8 @@ export interface DeviceDataReportResult {
 
 @Injectable()
 export class DeviceDataService {
+  private readonly logger = new Logger(DeviceDataService.name);
+
   constructor(
     private prisma: PrismaService,
     private alertEngine: AlertEngineService,
@@ -43,18 +45,28 @@ export class DeviceDataService {
       },
     });
 
-    const alerts = await this.alertEngine.processDeviceData(dto.containerNo, deviceData);
+    const result = await this.alertEngine.processDeviceData(dto.containerNo, deviceData);
+    const allAlerts = [...result.newAlerts, ...result.updatedAlerts];
 
     const allNotifications: NotificationResult[] = [];
-    for (const alert of alerts) {
+    for (const alert of result.newAlerts) {
       const freshAlert = await this.prisma.alert.findUnique({ where: { id: alert.id } });
       if (freshAlert) {
+        this.logger.log(
+          `New alert ${alert.id} created for container ${dto.containerNo}, triggering initial notification to DRIVER`,
+        );
         const results = await this.orchestratorService.processNewAlert(freshAlert);
         allNotifications.push(...results);
       }
     }
 
-    return { data: deviceData, alerts, notifications: allNotifications };
+    if (result.updatedAlerts.length > 0) {
+      this.logger.debug(
+        `${result.updatedAlerts.length} existing alerts updated for container ${dto.containerNo}, no new notifications sent (escalation progress preserved)`,
+      );
+    }
+
+    return { data: deviceData, alerts: allAlerts, notifications: allNotifications };
   }
 
   async findByContainer(
