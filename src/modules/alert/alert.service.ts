@@ -3,27 +3,14 @@ import { PrismaService } from '../../common/prisma.service';
 import { NotificationOrchestratorService, NotificationResult } from '../notification/notification-orchestrator.service';
 import { QueryAlertDto } from './dto/alert.dto';
 import { PaginationDto, buildPaginatedResponse, PaginatedResponse } from '../../common/dto/pagination.dto';
-import { Alert, Notification, Receipt, Container } from '@prisma/client';
+import { Alert, Notification, Receipt, Container, AlertOperationLog } from '@prisma/client';
 import { AlertStatus, NOTIFICATION_ORDER, RecipientRole } from '../../common/types/alert.types';
+import { EscalationInfo, EscalationStatus, calculateEscalationInfo, getRoleDisplayName } from '../../common/utils/escalation.util';
 import * as dayjs from 'dayjs';
-
-export interface EscalationInfo {
-  currentRole: string;
-  currentRoleName: string;
-  currentStep: number;
-  nextRole: string | null;
-  nextRoleName: string | null;
-  isLastLevel: boolean;
-  totalLevels: number;
-  escalationIntervalSec: number;
-  lastNotifyTime: string | null;
-  nextEscalationTime: string | null;
-  willEscalate: boolean;
-}
 
 export interface TimelineEvent {
   id: string;
-  type: 'ALERT_CREATED' | 'NOTIFICATION_SENT' | 'ESCALATION' | 'RECEIPT_SUBMITTED' | 'ALERT_RESOLVED' | 'ALERT_CLOSED';
+  type: 'ALERT_CREATED' | 'NOTIFICATION_SENT' | 'ESCALATION' | 'RECEIPT_SUBMITTED' | 'ALERT_RESOLVED' | 'ALERT_CLOSED' | 'MANUAL_PAUSE' | 'MANUAL_RESUME' | 'MANUAL_JUMP_LEVEL' | 'MANUAL_INTERVENTION';
   timestamp: string;
   title: string;
   description: string;
@@ -79,7 +66,7 @@ export class AlertService {
 
     const listWithInfo = list.map((alert: any) => ({
       ...alert,
-      escalationInfo: this.calculateEscalationInfo(alert),
+      escalationInfo: calculateEscalationInfo(alert),
     }));
 
     return buildPaginatedResponse(listWithInfo, total, page, pageSize);
@@ -101,7 +88,7 @@ export class AlertService {
 
     return {
       ...alert,
-      escalationInfo: this.calculateEscalationInfo(alert),
+      escalationInfo: calculateEscalationInfo(alert),
     };
   }
 
@@ -112,6 +99,7 @@ export class AlertService {
         container: true,
         notifications: { orderBy: { createdAt: 'asc' } },
         receipts: { orderBy: { handledAt: 'asc' } },
+        operationLogs: { orderBy: { createdAt: 'asc' } },
       },
     });
 
@@ -137,8 +125,8 @@ export class AlertService {
     let lastEscalationLevel = -1;
     for (const notif of alert.notifications) {
       if (notif.escalationLevel > lastEscalationLevel && notif.escalationLevel > 0) {
-        const prevRole = this.getRoleDisplayName(NOTIFICATION_ORDER[notif.escalationLevel - 1]);
-        const currRole = this.getRoleDisplayName(NOTIFICATION_ORDER[notif.escalationLevel]);
+        const prevRole = getRoleDisplayName(NOTIFICATION_ORDER[notif.escalationLevel - 1]);
+        const currRole = getRoleDisplayName(NOTIFICATION_ORDER[notif.escalationLevel]);
         events.push({
           id: `escalation-${notif.id}`,
           type: 'ESCALATION',
@@ -160,7 +148,7 @@ export class AlertService {
         type: 'NOTIFICATION_SENT',
         timestamp: notif.createdAt.toISOString(),
         title: `通知已发送（${this.getChannelDisplayName(notif.channel)}）`,
-        description: `发送给：${notif.recipientName}（${this.getRoleDisplayName(notif.recipientRole as RecipientRole)}），状态：${this.getNotifStatusName(notif.status)}`,
+        description: `发送给：${notif.recipientName}（${getRoleDisplayName(notif.recipientRole as RecipientRole)}），状态：${this.getNotifStatusName(notif.status)}`,
         metadata: {
           recipientRole: notif.recipientRole,
           recipientName: notif.recipientName,
@@ -209,51 +197,31 @@ export class AlertService {
       });
     }
 
+    for (const log of alert.operationLogs || []) {
+      const eventInfo = this.getOperationLogEventInfo(log);
+      events.push({
+        id: `op-${log.id}`,
+        type: eventInfo.type as any,
+        timestamp: log.createdAt.toISOString(),
+        title: eventInfo.title,
+        description: eventInfo.description,
+        metadata: {
+          operationType: log.operationType,
+          operatorId: log.operatorId,
+          operatorName: log.operatorName,
+          reason: log.reason,
+          beforeStep: log.beforeStep,
+          afterStep: log.afterStep,
+          beforeRole: log.beforeRole,
+          afterRole: log.afterRole,
+          pausedUntil: log.pausedUntil?.toISOString(),
+        },
+      });
+    }
+
     events.sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
     return events;
-  }
-
-  private calculateEscalationInfo(alert: Alert): EscalationInfo {
-    const currentStep = alert.escalationStep;
-    const currentRole = alert.currentNotifyRole as RecipientRole;
-    const isLastLevel = currentStep >= NOTIFICATION_ORDER.length - 1;
-    const nextStep = currentStep + 1;
-    const nextRole = isLastLevel ? null : NOTIFICATION_ORDER[nextStep];
-    const intervalSec = alert.escalationInterval || 1800;
-
-    let nextEscalationTime: string | null = null;
-    let willEscalate = false;
-
-    if (!isLastLevel && alert.status === 'ACTIVE' && alert.lastNotifyTime) {
-      const nextTime = dayjs(alert.lastNotifyTime).add(intervalSec, 'second');
-      nextEscalationTime = nextTime.toISOString();
-      willEscalate = dayjs().isBefore(nextTime);
-    }
-
-    return {
-      currentRole,
-      currentRoleName: this.getRoleDisplayName(currentRole),
-      currentStep,
-      nextRole,
-      nextRoleName: nextRole ? this.getRoleDisplayName(nextRole) : null,
-      isLastLevel,
-      totalLevels: NOTIFICATION_ORDER.length,
-      escalationIntervalSec: intervalSec,
-      lastNotifyTime: alert.lastNotifyTime ? alert.lastNotifyTime.toISOString() : null,
-      nextEscalationTime,
-      willEscalate,
-    };
-  }
-
-  private getRoleDisplayName(role: RecipientRole | string): string {
-    const map: Record<string, string> = {
-      DRIVER: '司机',
-      DISPATCHER: '调度',
-      CUSTOMER_SERVICE: '货主客服',
-      MANAGER: '经理',
-    };
-    return map[role] || role;
   }
 
   private getChannelDisplayName(channel: string): string {
@@ -300,6 +268,40 @@ export class AlertService {
     return map[status] || { title: status, description: '', stopsEscalation: false };
   }
 
+  private getOperationLogEventInfo(log: AlertOperationLog): { type: string; title: string; description: string } {
+    const operator = log.operatorName || log.operatorId || '系统';
+    const reason = log.reason ? `，原因：${log.reason}` : '';
+
+    switch (log.operationType) {
+      case 'PAUSE_ESCALATION':
+        return {
+          type: 'OPERATION_PAUSE',
+          title: '人工暂停催办',
+          description: `${operator}暂停了催办${reason}，暂停至：${log.pausedUntil ? new Date(log.pausedUntil).toLocaleString() : '未知'}`,
+        };
+      case 'RESUME_ESCALATION':
+        return {
+          type: 'OPERATION_RESUME',
+          title: '人工恢复催办',
+          description: `${operator}恢复了催办${reason}，从${getRoleDisplayName(log.afterRole || '')}层继续`,
+        };
+      case 'JUMP_LEVEL':
+        const from = getRoleDisplayName(log.beforeRole || '');
+        const to = getRoleDisplayName(log.afterRole || '');
+        return {
+          type: 'OPERATION_JUMP',
+          title: `人工调整层级：${from} → ${to}`,
+          description: `${operator}将催办层级从${from}调整到${to}${reason}`,
+        };
+      default:
+        return {
+          type: 'OPERATION_OTHER',
+          title: '人工干预',
+          description: `${operator}执行了${log.operationType}操作${reason}`,
+        };
+    }
+  }
+
   async close(id: string, remark?: string): Promise<AlertDetail> {
     const alert = await this.findOne(id);
 
@@ -319,13 +321,155 @@ export class AlertService {
 
     return {
       ...updated,
-      escalationInfo: this.calculateEscalationInfo(updated),
+      escalationInfo: calculateEscalationInfo(updated),
     };
   }
 
   async triggerNotifications(id: string): Promise<NotificationResult[]> {
     const alert = await this.findOne(id);
     return this.orchestratorService.processNewAlert(alert);
+  }
+
+  async pauseEscalation(
+    id: string,
+    params: { durationMinutes: number; reason?: string; operatorId?: string; operatorName?: string },
+  ): Promise<AlertDetail> {
+    const alert = await this.prisma.alert.findUnique({ where: { id } });
+    if (!alert) {
+      throw new NotFoundException('告警不存在');
+    }
+
+    const pausedUntil = dayjs().add(params.durationMinutes, 'minute').toDate();
+
+    const updated = await this.prisma.alert.update({
+      where: { id },
+      data: {
+        pausedUntil,
+        pausedReason: params.reason || null,
+        updatedAt: new Date(),
+      },
+      include: {
+        container: true,
+        notifications: { orderBy: { createdAt: 'desc' } },
+        receipts: { orderBy: { handledAt: 'desc' } },
+      },
+    });
+
+    await this.prisma.alertOperationLog.create({
+      data: {
+        alertId: id,
+        operationType: 'PAUSE_ESCALATION',
+        operatorId: params.operatorId || null,
+        operatorName: params.operatorName || null,
+        reason: params.reason || null,
+        beforeStep: alert.escalationStep,
+        afterStep: alert.escalationStep,
+        beforeRole: alert.currentNotifyRole,
+        afterRole: alert.currentNotifyRole,
+        pausedUntil,
+      },
+    });
+
+    return {
+      ...updated,
+      escalationInfo: calculateEscalationInfo(updated),
+    };
+  }
+
+  async resumeEscalation(
+    id: string,
+    params: { reason?: string; operatorId?: string; operatorName?: string },
+  ): Promise<AlertDetail> {
+    const alert = await this.prisma.alert.findUnique({ where: { id } });
+    if (!alert) {
+      throw new NotFoundException('告警不存在');
+    }
+
+    const updated = await this.prisma.alert.update({
+      where: { id },
+      data: {
+        pausedUntil: null,
+        pausedReason: null,
+        lastNotifyTime: new Date(),
+        updatedAt: new Date(),
+      },
+      include: {
+        container: true,
+        notifications: { orderBy: { createdAt: 'desc' } },
+        receipts: { orderBy: { handledAt: 'desc' } },
+      },
+    });
+
+    await this.prisma.alertOperationLog.create({
+      data: {
+        alertId: id,
+        operationType: 'RESUME_ESCALATION',
+        operatorId: params.operatorId || null,
+        operatorName: params.operatorName || null,
+        reason: params.reason || null,
+        beforeStep: alert.escalationStep,
+        afterStep: alert.escalationStep,
+        beforeRole: alert.currentNotifyRole,
+        afterRole: alert.currentNotifyRole,
+      },
+    });
+
+    return {
+      ...updated,
+      escalationInfo: calculateEscalationInfo(updated),
+    };
+  }
+
+  async jumpEscalationLevel(
+    id: string,
+    params: { targetStep: number; reason?: string; operatorId?: string; operatorName?: string },
+  ): Promise<AlertDetail> {
+    const alert = await this.prisma.alert.findUnique({ where: { id } });
+    if (!alert) {
+      throw new NotFoundException('告警不存在');
+    }
+
+    if (params.targetStep < 0 || params.targetStep >= NOTIFICATION_ORDER.length) {
+      throw new Error(`目标层级必须在 0 到 ${NOTIFICATION_ORDER.length - 1} 之间`);
+    }
+
+    const targetRole = NOTIFICATION_ORDER[params.targetStep];
+
+    const updated = await this.prisma.alert.update({
+      where: { id },
+      data: {
+        escalationStep: params.targetStep,
+        currentNotifyRole: targetRole,
+        lastNotifyTime: new Date(),
+        pausedUntil: null,
+        pausedReason: null,
+        updatedAt: new Date(),
+      },
+      include: {
+        container: true,
+        notifications: { orderBy: { createdAt: 'desc' } },
+        receipts: { orderBy: { handledAt: 'desc' } },
+      },
+    });
+
+    await this.prisma.alertOperationLog.create({
+      data: {
+        alertId: id,
+        operationType: 'JUMP_LEVEL',
+        operatorId: params.operatorId || null,
+        operatorName: params.operatorName || null,
+        reason: params.reason || null,
+        beforeStep: alert.escalationStep,
+        afterStep: params.targetStep,
+        beforeRole: alert.currentNotifyRole,
+        afterRole: targetRole,
+      },
+    });
+
+    return {
+      ...updated,
+      escalationInfo: calculateEscalationInfo(updated),
+    };
   }
 
   async getStats() {

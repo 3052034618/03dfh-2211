@@ -42,12 +42,51 @@ model AlertRule {
 
   escalationInterval Int?
   escalationChannels String?
+  currentVersion   Int         @default(1)
 
   description     String?
   createdAt       DateTime    @default(now())
   updatedAt       DateTime    @updatedAt
 
   containers      Container[]
+  versions        AlertRuleVersion[]
+}
+
+model AlertRuleVersion {
+  id                   String      @id @default(uuid())
+  ruleId               String
+  version              Int
+
+  name                 String
+  cargoType            String
+  alertType            String
+  alertLevel           String
+  enabled              Boolean
+
+  minValue             Float?
+  maxValue             Float?
+  allowedDuration      Int?
+  tolerance            Float?
+
+  deviationType        String?
+  maxDeviationDistance Float?
+
+  escalationInterval   Int?
+  escalationChannels   String?
+
+  description          String?
+
+  effectiveFrom        DateTime    @default(now())
+  effectiveTo          DateTime?
+  changeReason         String?
+  createdBy            String?
+
+  createdAt            DateTime    @default(now())
+
+  rule                 AlertRule   @relation(fields: [ruleId], references: [id])
+
+  @@index([ruleId])
+  @@index([version])
 }
 
 model DeviceData {
@@ -90,6 +129,9 @@ model Alert {
   currentNotifyRole String      @default("DRIVER")
   escalationInterval Int        @default(1800)
   escalationChannels String?
+  ruleVersion      Int?
+  pausedUntil      DateTime?
+  pausedReason     String?
 
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
@@ -97,6 +139,29 @@ model Alert {
   container        Container    @relation(fields: [containerId], references: [id])
   notifications    Notification[]
   receipts         Receipt[]
+  operationLogs    AlertOperationLog[]
+}
+
+model AlertOperationLog {
+  id               String      @id @default(uuid())
+  alertId          String
+  operationType    String
+  operatorId       String?
+  operatorName     String?
+  reason           String?
+  beforeStep       Int?
+  afterStep        Int?
+  beforeRole       String?
+  afterRole        String?
+  pausedUntil      DateTime?
+  metadata         String?
+
+  createdAt        DateTime    @default(now())
+
+  alert            Alert       @relation(fields: [alertId], references: [id])
+
+  @@index([alertId])
+  @@index([operationType])
 }
 
 model Notification {

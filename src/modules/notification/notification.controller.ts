@@ -3,7 +3,13 @@ import { ApiTags, ApiOperation } from '@nestjs/swagger';
 import { NotificationOrchestratorService, NotificationResult } from './notification-orchestrator.service';
 import { PrismaService } from '../../common/prisma.service';
 import { PaginationDto, buildPaginatedResponse, PaginatedResponse } from '../../common/dto/pagination.dto';
-import { Notification } from '@prisma/client';
+import { Notification, Alert } from '@prisma/client';
+import { EscalationInfo, calculateEscalationInfo } from '../../common/utils/escalation.util';
+
+export type NotificationWithEscalation = Notification & {
+  alert?: Alert;
+  escalationInfo?: EscalationInfo;
+};
 
 @ApiTags('通知管理')
 @Controller('notifications')
@@ -14,10 +20,10 @@ export class NotificationController {
   ) {}
 
   @Get()
-  @ApiOperation({ summary: '查询通知列表' })
+  @ApiOperation({ summary: '查询通知列表（含催办进度）' })
   async findAll(
     @Query() pagination: PaginationDto,
-  ): Promise<PaginatedResponse<Notification>> {
+  ): Promise<PaginatedResponse<NotificationWithEscalation>> {
     const { page, pageSize } = pagination;
     const skip = (page - 1) * pageSize;
 
@@ -26,33 +32,49 @@ export class NotificationController {
         skip,
         take: pageSize,
         orderBy: { createdAt: 'desc' },
+        include: { alert: true },
       }),
       this.prisma.notification.count(),
     ]);
 
-    return buildPaginatedResponse(list, total, page, pageSize);
+    const listWithInfo = list.map((notif) => ({
+      ...notif,
+      escalationInfo: notif.alert ? calculateEscalationInfo(notif.alert) : undefined,
+    }));
+
+    return buildPaginatedResponse(listWithInfo, total, page, pageSize);
   }
 
   @Get('alert/:alertId')
-  @ApiOperation({ summary: '查询某个告警的所有通知' })
+  @ApiOperation({ summary: '查询某个告警的所有通知（含催办进度）' })
   async findByAlert(
     @Param('alertId') alertId: string,
     @Query() pagination: PaginationDto,
-  ): Promise<PaginatedResponse<Notification>> {
+  ): Promise<PaginatedResponse<NotificationWithEscalation>> {
     const { page, pageSize } = pagination;
     const skip = (page - 1) * pageSize;
 
-    const [list, total] = await Promise.all([
-      this.prisma.notification.findMany({
-        where: { alertId },
-        skip,
-        take: pageSize,
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.notification.count({ where: { alertId } }),
+    const [alert, [list, total]] = await Promise.all([
+      this.prisma.alert.findUnique({ where: { id: alertId } }),
+      Promise.all([
+        this.prisma.notification.findMany({
+          where: { alertId },
+          skip,
+          take: pageSize,
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.notification.count({ where: { alertId } }),
+      ]),
     ]);
 
-    return buildPaginatedResponse(list, total, page, pageSize);
+    const escalationInfo = alert ? calculateEscalationInfo(alert) : undefined;
+
+    const listWithInfo = list.map((notif) => ({
+      ...notif,
+      escalationInfo,
+    }));
+
+    return buildPaginatedResponse(listWithInfo, total, page, pageSize);
   }
 
   @Post(':alertId/send')

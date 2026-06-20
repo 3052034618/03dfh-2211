@@ -301,6 +301,11 @@ export class NotificationOrchestratorService {
       if (!alert.lastNotifyTime) {
         return false;
       }
+
+      if (alert.pausedUntil && new Date(alert.pausedUntil).getTime() > now) {
+        return false;
+      }
+
       const intervalMs = (alert.escalationInterval || 1800) * 1000;
       return now - alert.lastNotifyTime.getTime() >= intervalMs;
     });

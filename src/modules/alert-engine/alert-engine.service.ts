@@ -597,6 +597,7 @@ export class AlertEngineService {
         abnormalSince: checkResult.segmentStart || new Date(),
         escalationInterval: rule.escalationInterval || 1800,
         escalationChannels: rule.escalationChannels || null,
+        ruleVersion: rule.currentVersion || 1,
       },
     });
   }
