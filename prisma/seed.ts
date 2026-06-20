@@ -32,6 +32,13 @@ async function main() {
         destination: '北京',
         currentRoute: '京沪高速',
         driverId: '13800138001',
+        routeWaypoints: JSON.stringify([
+          { lat: 31.2304, lng: 121.4737 },
+          { lat: 32.0603, lng: 118.7969 },
+          { lat: 34.2632, lng: 117.2258 },
+          { lat: 36.6512, lng: 117.1201 },
+          { lat: 39.9042, lng: 116.4074 },
+        ]),
       },
     }),
     prisma.container.create({
@@ -42,6 +49,11 @@ async function main() {
         destination: '深圳',
         currentRoute: '广深高速',
         driverId: '13800138001',
+        routeWaypoints: JSON.stringify([
+          { lat: 23.1291, lng: 113.2644 },
+          { lat: 22.8, lng: 113.5 },
+          { lat: 22.5431, lng: 114.0579 },
+        ]),
       },
     }),
     prisma.container.create({
@@ -52,6 +64,11 @@ async function main() {
         destination: '重庆',
         currentRoute: '成渝高速',
         driverId: '13800138001',
+        routeWaypoints: JSON.stringify([
+          { lat: 30.5728, lng: 104.0668 },
+          { lat: 30.0, lng: 105.0 },
+          { lat: 29.4316, lng: 106.9123 },
+        ]),
       },
     }),
   ]);
@@ -90,6 +107,16 @@ async function main() {
         description: '疫苗箱开门超过2分钟即告警',
       },
       {
+        name: '疫苗-路线偏离',
+        cargoType: 'VACCINE',
+        alertType: 'POSITION_DEVIATION',
+        alertLevel: 'CRITICAL',
+        allowedDuration: 300,
+        deviationType: 'ROUTE_CORRIDOR',
+        maxDeviationDistance: 10,
+        description: '疫苗箱偏离规划路线超过10km，持续5分钟告警',
+      },
+      {
         name: '冻品-温度偏高',
         cargoType: 'FROZEN',
         alertType: 'TEMPERATURE_HIGH',
@@ -116,6 +143,16 @@ async function main() {
         alertLevel: 'INFO',
         allowedDuration: 600,
         description: '冻品允许短时开门，超过10分钟才告警',
+      },
+      {
+        name: '冻品-路线偏离',
+        cargoType: 'FROZEN',
+        alertType: 'POSITION_DEVIATION',
+        alertLevel: 'WARNING',
+        allowedDuration: 600,
+        deviationType: 'MAX_DISTANCE',
+        maxDeviationDistance: 20,
+        description: '冻品箱偏离规划路线超过20km，持续10分钟告警',
       },
       {
         name: '通用-断电告警',

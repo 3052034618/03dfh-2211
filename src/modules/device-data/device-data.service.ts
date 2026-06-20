@@ -1,18 +1,26 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../common/prisma.service';
 import { AlertEngineService } from '../alert-engine/alert-engine.service';
+import { NotificationOrchestratorService, NotificationResult } from '../notification/notification-orchestrator.service';
 import { ReportDeviceDataDto } from './dto/device-data.dto';
 import { PaginationDto, buildPaginatedResponse, PaginatedResponse } from '../../common/dto/pagination.dto';
-import { DeviceData, Alert } from '@prisma/client';
+import { DeviceData, Alert, Notification } from '@prisma/client';
+
+export interface DeviceDataReportResult {
+  data: DeviceData;
+  alerts: Alert[];
+  notifications: NotificationResult[];
+}
 
 @Injectable()
 export class DeviceDataService {
   constructor(
     private prisma: PrismaService,
     private alertEngine: AlertEngineService,
+    private orchestratorService: NotificationOrchestratorService,
   ) {}
 
-  async report(dto: ReportDeviceDataDto): Promise<{ data: DeviceData; alerts: Alert[] }> {
+  async report(dto: ReportDeviceDataDto): Promise<DeviceDataReportResult> {
     const container = await this.prisma.container.findUnique({
       where: { containerNo: dto.containerNo },
     });
@@ -37,7 +45,16 @@ export class DeviceDataService {
 
     const alerts = await this.alertEngine.processDeviceData(dto.containerNo, deviceData);
 
-    return { data: deviceData, alerts };
+    const allNotifications: NotificationResult[] = [];
+    for (const alert of alerts) {
+      const freshAlert = await this.prisma.alert.findUnique({ where: { id: alert.id } });
+      if (freshAlert) {
+        const results = await this.orchestratorService.processNewAlert(freshAlert);
+        allNotifications.push(...results);
+      }
+    }
+
+    return { data: deviceData, alerts, notifications: allNotifications };
   }
 
   async findByContainer(

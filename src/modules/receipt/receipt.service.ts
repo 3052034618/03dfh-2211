@@ -30,7 +30,7 @@ export class ReceiptService {
 
     const alert = await this.prisma.alert.findUnique({
       where: { id: dto.alertId },
-      include: { container: true },
+      include: { container: true, receipts: true },
     });
 
     if (!alert) {
@@ -41,7 +41,7 @@ export class ReceiptService {
       data: dto,
     });
 
-    const { newStatus, shouldEscalate, message } = this.handleReceiptStatus(
+    const { newStatus, shouldEscalate, shouldStopEscalation, message } = this.handleReceiptStatus(
       dto.status as ReceiptStatus,
       alert,
     );
@@ -50,7 +50,7 @@ export class ReceiptService {
       where: { id: dto.alertId },
       data: {
         status: newStatus,
-        endTime: newStatus === ('RESOLVED' as AlertStatus) ? new Date() : alert.endTime,
+        endTime: ['RESOLVED', 'CLOSED'].includes(newStatus) ? new Date() : alert.endTime,
         updatedAt: new Date(),
       },
     });
@@ -59,9 +59,15 @@ export class ReceiptService {
 
     let escalationTriggered = false;
     if (shouldEscalate) {
-      this.logger.log(`Escalation triggered for alert ${dto.alertId} due to receipt status`);
+      this.logger.log(`Receipt ESCALATED for alert ${dto.alertId}, immediately escalating to next level`);
       await this.orchestratorService.escalateAlert(alert);
       escalationTriggered = true;
+    }
+
+    if (shouldStopEscalation) {
+      this.logger.log(
+        `Receipt ${dto.status} for alert ${dto.alertId}, escalation stopped. No further notifications will be sent.`,
+      );
     }
 
     return {
@@ -76,40 +82,45 @@ export class ReceiptService {
   private handleReceiptStatus(
     status: ReceiptStatus,
     alert: any,
-  ): { newStatus: AlertStatus; shouldEscalate: boolean; message: string } {
+  ): { newStatus: AlertStatus; shouldEscalate: boolean; shouldStopEscalation: boolean; message: string } {
     switch (status) {
       case 'CONFIRMED':
         return {
           newStatus: 'ACKNOWLEDGED' as AlertStatus,
           shouldEscalate: false,
-          message: '告警已确认处理，暂缓催办',
+          shouldStopEscalation: true,
+          message: '告警已确认，停止催办，不再升级通知',
         };
 
       case 'FALSE_ALARM':
         return {
           newStatus: 'RESOLVED' as AlertStatus,
           shouldEscalate: false,
-          message: '误报，告警已关闭，停止催办',
+          shouldStopEscalation: true,
+          message: '误报确认，告警已关闭，停止催办',
         };
 
       case 'IN_PROGRESS':
         return {
           newStatus: 'ACKNOWLEDGED' as AlertStatus,
           shouldEscalate: false,
-          message: '现场处理中，暂缓催办',
+          shouldStopEscalation: true,
+          message: '现场处理中，停止催办，等待处理完成',
         };
 
       case 'ESCALATED':
         return {
           newStatus: 'ACTIVE' as AlertStatus,
           shouldEscalate: true,
-          message: '已申请升级理赔，立即升级通知',
+          shouldStopEscalation: false,
+          message: '已申请升级理赔，立即升级通知到下一层级',
         };
 
       default:
         return {
           newStatus: alert.status as AlertStatus,
           shouldEscalate: false,
+          shouldStopEscalation: false,
           message: '未知状态',
         };
     }

@@ -23,6 +23,11 @@ interface ContainerContext {
   activeAlerts: Alert[];
 }
 
+interface Waypoint {
+  lat: number;
+  lng: number;
+}
+
 @Injectable()
 export class AlertEngineService {
   private readonly logger = new Logger(AlertEngineService.name);
@@ -104,25 +109,27 @@ export class AlertEngineService {
 
     switch (alertType) {
       case 'TEMPERATURE_HIGH':
-        return this.checkTemperatureHigh(rule, dataPoints);
+        return this.checkTemperatureHigh(rule, ctx, dataPoints);
       case 'TEMPERATURE_LOW':
-        return this.checkTemperatureLow(rule, dataPoints);
+        return this.checkTemperatureLow(rule, ctx, dataPoints);
       case 'TEMPERATURE_FLUCTUATION':
-        return this.checkTemperatureFluctuation(rule, dataPoints);
+        return this.checkTemperatureFluctuation(rule, ctx, dataPoints);
       case 'DOOR_OPEN':
-        return this.checkDoorOpen(rule, dataPoints);
+        return this.checkDoorOpen(rule, ctx, dataPoints);
       case 'POWER_FAILURE':
-        return this.checkPowerFailure(rule, dataPoints);
+        return this.checkPowerFailure(rule, ctx, dataPoints);
+      case 'POSITION_DEVIATION':
+        return this.checkPositionDeviation(rule, ctx, dataPoints);
       case 'HUMIDITY_HIGH':
-        return this.checkHumidityHigh(rule, dataPoints);
+        return this.checkHumidityHigh(rule, ctx, dataPoints);
       case 'HUMIDITY_LOW':
-        return this.checkHumidityLow(rule, dataPoints);
+        return this.checkHumidityLow(rule, ctx, dataPoints);
       default:
         return { triggered: false, alertType, durationSec: 0 };
     }
   }
 
-  private checkTemperatureHigh(rule: AlertRule, data: DeviceData[]): RuleCheckResult {
+  private checkTemperatureHigh(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.temperature !== undefined && d.temperature !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'TEMPERATURE_HIGH', durationSec: 0 };
 
@@ -133,7 +140,8 @@ export class AlertEngineService {
       return { triggered: false, alertType: 'TEMPERATURE_HIGH', durationSec: 0 };
     }
 
-    const duration = this.calculateDuration(violatingData);
+    const continuousViolatingData = this.findContinuousViolation(violatingData, ctx, 'TEMPERATURE_HIGH');
+    const duration = this.calculateContinuousDuration(continuousViolatingData, ctx, 'TEMPERATURE_HIGH');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -145,7 +153,7 @@ export class AlertEngineService {
     };
   }
 
-  private checkTemperatureLow(rule: AlertRule, data: DeviceData[]): RuleCheckResult {
+  private checkTemperatureLow(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.temperature !== undefined && d.temperature !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'TEMPERATURE_LOW', durationSec: 0 };
 
@@ -156,7 +164,7 @@ export class AlertEngineService {
       return { triggered: false, alertType: 'TEMPERATURE_LOW', durationSec: 0 };
     }
 
-    const duration = this.calculateDuration(violatingData);
+    const duration = this.calculateContinuousDuration(violatingData, ctx, 'TEMPERATURE_LOW');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -168,7 +176,7 @@ export class AlertEngineService {
     };
   }
 
-  private checkTemperatureFluctuation(rule: AlertRule, data: DeviceData[]): RuleCheckResult {
+  private checkTemperatureFluctuation(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.temperature !== undefined && d.temperature !== null);
     if (validData.length < 2) return { triggered: false, alertType: 'TEMPERATURE_FLUCTUATION', durationSec: 0 };
 
@@ -181,7 +189,7 @@ export class AlertEngineService {
       return { triggered: false, alertType: 'TEMPERATURE_FLUCTUATION', durationSec: 0 };
     }
 
-    const duration = this.calculateDuration(validData);
+    const duration = this.calculateContinuousDuration(validData, ctx, 'TEMPERATURE_FLUCTUATION');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -193,7 +201,7 @@ export class AlertEngineService {
     };
   }
 
-  private checkDoorOpen(rule: AlertRule, data: DeviceData[]): RuleCheckResult {
+  private checkDoorOpen(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.doorOpen !== undefined && d.doorOpen !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'DOOR_OPEN', durationSec: 0 };
 
@@ -202,7 +210,7 @@ export class AlertEngineService {
       return { triggered: false, alertType: 'DOOR_OPEN', durationSec: 0 };
     }
 
-    const duration = this.calculateDuration(openData);
+    const duration = this.calculateContinuousDuration(openData, ctx, 'DOOR_OPEN');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -214,7 +222,7 @@ export class AlertEngineService {
     };
   }
 
-  private checkPowerFailure(rule: AlertRule, data: DeviceData[]): RuleCheckResult {
+  private checkPowerFailure(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.powerStatus !== undefined && d.powerStatus !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'POWER_FAILURE', durationSec: 0 };
 
@@ -223,7 +231,7 @@ export class AlertEngineService {
       return { triggered: false, alertType: 'POWER_FAILURE', durationSec: 0 };
     }
 
-    const duration = this.calculateDuration(failureData);
+    const duration = this.calculateContinuousDuration(failureData, ctx, 'POWER_FAILURE');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -235,7 +243,42 @@ export class AlertEngineService {
     };
   }
 
-  private checkHumidityHigh(rule: AlertRule, data: DeviceData[]): RuleCheckResult {
+  private checkPositionDeviation(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
+    const validData = data.filter(
+      (d) => d.latitude !== undefined && d.latitude !== null && d.longitude !== undefined && d.longitude !== null,
+    );
+    if (validData.length === 0) return { triggered: false, alertType: 'POSITION_DEVIATION', durationSec: 0 };
+
+    const maxDistance = rule.maxDeviationDistance || 5;
+    const deviationType = rule.deviationType || 'MAX_DISTANCE';
+
+    const deviatedData = validData.filter((d) => {
+      return this.isPositionDeviated(d.latitude!, d.longitude!, ctx.container, maxDistance, deviationType);
+    });
+
+    if (deviatedData.length === 0) {
+      return { triggered: false, alertType: 'POSITION_DEVIATION', durationSec: 0 };
+    }
+
+    const distance = this.calculateDistanceToRoute(
+      validData[0].latitude!,
+      validData[0].longitude!,
+      ctx.container,
+    );
+
+    const duration = this.calculateContinuousDuration(deviatedData, ctx, 'POSITION_DEVIATION');
+    const triggered = duration >= (rule.allowedDuration || 0);
+
+    return {
+      triggered,
+      alertType: 'POSITION_DEVIATION',
+      currentValue: Math.round(distance * 10) / 10,
+      threshold: `偏离路线 > ${maxDistance}km (${deviationType === 'ROUTE_CORRIDOR' ? '路线走廊' : '最大距离'}判断)`,
+      durationSec: duration,
+    };
+  }
+
+  private checkHumidityHigh(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.humidity !== undefined && d.humidity !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'HUMIDITY_HIGH', durationSec: 0 };
 
@@ -246,7 +289,7 @@ export class AlertEngineService {
       return { triggered: false, alertType: 'HUMIDITY_HIGH', durationSec: 0 };
     }
 
-    const duration = this.calculateDuration(violatingData);
+    const duration = this.calculateContinuousDuration(violatingData, ctx, 'HUMIDITY_HIGH');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -258,7 +301,7 @@ export class AlertEngineService {
     };
   }
 
-  private checkHumidityLow(rule: AlertRule, data: DeviceData[]): RuleCheckResult {
+  private checkHumidityLow(rule: AlertRule, ctx: ContainerContext, data: DeviceData[]): RuleCheckResult {
     const validData = data.filter((d) => d.humidity !== undefined && d.humidity !== null);
     if (validData.length === 0) return { triggered: false, alertType: 'HUMIDITY_LOW', durationSec: 0 };
 
@@ -269,7 +312,7 @@ export class AlertEngineService {
       return { triggered: false, alertType: 'HUMIDITY_LOW', durationSec: 0 };
     }
 
-    const duration = this.calculateDuration(violatingData);
+    const duration = this.calculateContinuousDuration(violatingData, ctx, 'HUMIDITY_LOW');
     const triggered = duration >= (rule.allowedDuration || 0);
 
     return {
@@ -281,12 +324,119 @@ export class AlertEngineService {
     };
   }
 
-  private calculateDuration(data: DeviceData[]): number {
-    if (data.length === 0) return 0;
+  private isPositionDeviated(
+    lat: number,
+    lng: number,
+    container: Container,
+    maxDistance: number,
+    deviationType: string,
+  ): boolean {
+    const distance = this.calculateDistanceToRoute(lat, lng, container);
+    return distance > maxDistance;
+  }
+
+  private calculateDistanceToRoute(lat: number, lng: number, container: Container): number {
+    const waypoints = this.parseWaypoints(container);
+    if (waypoints.length === 0) {
+      return this.calculateHaversineDistance(
+        lat, lng,
+        this.getOriginCoords(container),
+      );
+    }
+
+    let minDistance = Infinity;
+    for (let i = 0; i < waypoints.length - 1; i++) {
+      const dist = this.distanceToSegment(lat, lng, waypoints[i], waypoints[i + 1]);
+      minDistance = Math.min(minDistance, dist);
+    }
+
+    if (waypoints.length === 1) {
+      const dist = this.calculateHaversineDistance(lat, lng, waypoints[0]);
+      minDistance = Math.min(minDistance, dist);
+    }
+
+    return minDistance;
+  }
+
+  private parseWaypoints(container: Container): Waypoint[] {
+    if (!container.routeWaypoints) return [];
+
+    try {
+      const parsed = JSON.parse(container.routeWaypoints);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private getOriginCoords(container: Container): Waypoint {
+    const cityCoords: Record<string, Waypoint> = {
+      '上海': { lat: 31.2304, lng: 121.4737 },
+      '北京': { lat: 39.9042, lng: 116.4074 },
+      '广州': { lat: 23.1291, lng: 113.2644 },
+      '深圳': { lat: 22.5431, lng: 114.0579 },
+      '成都': { lat: 30.5728, lng: 104.0668 },
+      '重庆': { lat: 29.4316, lng: 106.9123 },
+    };
+
+    return cityCoords[container.origin] || { lat: 0, lng: 0 };
+  }
+
+  private distanceToSegment(lat: number, lng: number, a: Waypoint, b: Waypoint): number {
+    const d1 = this.calculateHaversineDistance(lat, lng, a);
+    const d2 = this.calculateHaversineDistance(lat, lng, b);
+    const d3 = this.calculateHaversineDistance(a.lat, a.lng, b);
+
+    if (d3 === 0) return d1;
+
+    const t = Math.max(0, Math.min(1,
+      ((lat - a.lat) * (b.lat - a.lat) + (lng - a.lng) * (b.lng - a.lng)) /
+      ((b.lat - a.lat) ** 2 + (b.lng - a.lng) ** 2),
+    ));
+
+    const projLat = a.lat + t * (b.lat - a.lat);
+    const projLng = a.lng + t * (b.lng - a.lng);
+
+    return this.calculateHaversineDistance(lat, lng, { lat: projLat, lng: projLng });
+  }
+
+  private calculateHaversineDistance(lat1: number, lng1: number, p2: Waypoint): number {
+    const R = 6371;
+    const dLat = this.toRad(p2.lat - lat1);
+    const dLng = this.toRad(p2.lng - lng1);
+    const a =
+      Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+      Math.cos(this.toRad(lat1)) * Math.cos(this.toRad(p2.lat)) *
+      Math.sin(dLng / 2) * Math.sin(dLng / 2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+    return R * c;
+  }
+
+  private toRad(deg: number): number {
+    return deg * (Math.PI / 180);
+  }
+
+  private calculateContinuousDuration(
+    violatingData: DeviceData[],
+    ctx: ContainerContext,
+    alertType: AlertType,
+  ): number {
+    if (violatingData.length === 0) return 0;
+
+    const existingAlert = ctx.activeAlerts.find((a) => a.alertType === alertType);
+    const abnormalSince = existingAlert?.abnormalSince;
+
+    if (abnormalSince) {
+      return dayjs().diff(dayjs(abnormalSince), 'second');
+    }
 
     const now = dayjs();
-    const oldest = dayjs(data[data.length - 1].timestamp);
+    const oldest = dayjs(violatingData[violatingData.length - 1].timestamp);
     return now.diff(oldest, 'second');
+  }
+
+  private findContinuousViolation(violatingData: DeviceData[], ctx: ContainerContext, alertType: AlertType): DeviceData[] {
+    return violatingData;
   }
 
   private async handleTriggeredRule(
@@ -300,14 +450,20 @@ export class AlertEngineService {
     const suggestion = this.generateSuggestion(checkResult.alertType);
 
     if (existingAlert) {
+      const updateData: any = {
+        durationSec: checkResult.durationSec,
+        currentValue: checkResult.currentValue ?? null,
+        threshold: checkResult.threshold ?? null,
+        updatedAt: new Date(),
+      };
+
+      if (!existingAlert.abnormalSince) {
+        updateData.abnormalSince = existingAlert.startTime;
+      }
+
       return this.prisma.alert.update({
         where: { id: existingAlert.id },
-        data: {
-          durationSec: checkResult.durationSec,
-          currentValue: checkResult.currentValue ?? null,
-          threshold: checkResult.threshold ?? null,
-          updatedAt: new Date(),
-        },
+        data: updateData,
       });
     }
 
@@ -325,6 +481,7 @@ export class AlertEngineService {
         threshold: checkResult.threshold ?? null,
         durationSec: checkResult.durationSec,
         suggestion,
+        abnormalSince: new Date(),
       },
     });
   }
@@ -340,7 +497,7 @@ export class AlertEngineService {
 
     if (activeAlert) {
       this.logger.log(
-        `Alert resolved for container ${ctx.container.containerNo}: ${rule.alertType}`,
+        `Alert condition recovered for container ${ctx.container.containerNo}: ${rule.alertType}, resetting abnormalSince`,
       );
 
       await this.prisma.alert.update({
@@ -348,6 +505,7 @@ export class AlertEngineService {
         data: {
           status: 'RESOLVED' as AlertStatus,
           endTime: new Date(),
+          abnormalSince: null,
           updatedAt: new Date(),
         },
       });
@@ -361,7 +519,7 @@ export class AlertEngineService {
       TEMPERATURE_FLUCTUATION: '建议检查箱门密封是否完好，制冷机组是否频繁启停',
       DOOR_OPEN: '建议立即关闭箱门，检查门锁是否正常',
       POWER_FAILURE: '建议检查电源插头和线缆，必要时启动备用电源',
-      POSITION_DEVIATION: '建议确认行驶路线，联系调度核实',
+      POSITION_DEVIATION: '建议确认行驶路线，联系调度核实是否需要调整',
       HUMIDITY_HIGH: '建议检查通风系统，适当降低湿度',
       HUMIDITY_LOW: '建议检查加湿器运行状态，适当提高湿度',
     };

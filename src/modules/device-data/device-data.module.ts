@@ -3,8 +3,10 @@ import { DeviceDataService } from './device-data.service';
 import { DeviceDataController } from './device-data.controller';
 import { PrismaService } from '../../common/prisma.service';
 import { AlertEngineService } from '../alert-engine/alert-engine.service';
+import { NotificationModule } from '../notification/notification.module';
 
 @Module({
+  imports: [NotificationModule],
   controllers: [DeviceDataController],
   providers: [DeviceDataService, PrismaService, AlertEngineService],
   exports: [DeviceDataService],

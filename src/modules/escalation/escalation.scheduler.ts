@@ -2,7 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import { NotificationOrchestratorService } from '../notification/notification-orchestrator.service';
 import { PrismaService } from '../../common/prisma.service';
-import { AlertStatus } from '../../common/types/alert.types';
+import { AlertStatus, NOTIFICATION_ORDER } from '../../common/types/alert.types';
 
 @Injectable()
 export class EscalationScheduler {
@@ -28,7 +28,18 @@ export class EscalationScheduler {
 
     for (const alert of pendingAlerts) {
       try {
-        await this.orchestratorService.escalateAlert(alert);
+        const currentRole = alert.currentNotifyRole;
+        const nextStep = alert.escalationStep + 1;
+        const nextRole = nextStep < NOTIFICATION_ORDER.length ? NOTIFICATION_ORDER[nextStep] : 'MAX';
+
+        this.logger.log(
+          `Escalating alert ${alert.id}: ${currentRole} → ${nextRole} (step ${alert.escalationStep} → ${nextStep})`,
+        );
+
+        const results = await this.orchestratorService.escalateAlert(alert);
+        this.logger.log(
+          `Escalation results for alert ${alert.id}: ${results.length} notifications sent`,
+        );
       } catch (error) {
         this.logger.error(
           `Failed to escalate alert ${alert.id}`,
@@ -36,17 +47,5 @@ export class EscalationScheduler {
         );
       }
     }
-  }
-
-  @Cron(CronExpression.EVERY_10_MINUTES)
-  async checkResolvedAlerts() {
-    this.logger.debug('Checking resolved alerts...');
-
-    const activeAlerts = await this.prisma.alert.findMany({
-      where: { status: 'ACTIVE' as AlertStatus },
-      include: { container: true },
-    });
-
-    this.logger.log(`Checking ${activeAlerts.length} active alerts`);
   }
 }

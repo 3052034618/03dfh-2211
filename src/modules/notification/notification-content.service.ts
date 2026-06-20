@@ -130,6 +130,8 @@ export class NotificationContentService {
         return alert.currentValue === 1 ? '开启' : '关闭';
       case 'POWER_FAILURE':
         return alert.currentValue === 0 ? '断开' : '正常';
+      case 'POSITION_DEVIATION':
+        return `${alert.currentValue?.toFixed(1)}km`;
       default:
         return String(alert.currentValue);
     }

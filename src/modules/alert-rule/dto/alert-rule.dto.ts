@@ -4,6 +4,7 @@ import { IsString, IsNumber, IsOptional, IsBoolean, Min, IsIn } from 'class-vali
 const CARGO_TYPES = ['FROZEN', 'REFRIGERATED', 'VACCINE', 'PHARMACEUTICAL', 'FRESH_PRODUCE', 'OTHER'];
 const ALERT_TYPES = ['TEMPERATURE_HIGH', 'TEMPERATURE_LOW', 'TEMPERATURE_FLUCTUATION', 'DOOR_OPEN', 'POWER_FAILURE', 'POSITION_DEVIATION', 'HUMIDITY_HIGH', 'HUMIDITY_LOW'];
 const ALERT_LEVELS = ['INFO', 'WARNING', 'CRITICAL'];
+const DEVIATION_TYPES = ['MAX_DISTANCE', 'ROUTE_CORRIDOR'];
 
 export class CreateAlertRuleDto {
   @ApiProperty({ description: '规则名称' })
@@ -42,6 +43,17 @@ export class CreateAlertRuleDto {
   @IsOptional()
   @IsNumber()
   tolerance?: number;
+
+  @ApiPropertyOptional({ description: '路线偏离判断方式', enum: DEVIATION_TYPES })
+  @IsOptional()
+  @IsIn(DEVIATION_TYPES)
+  deviationType?: string;
+
+  @ApiPropertyOptional({ description: '最大偏离距离（km）' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  maxDeviationDistance?: number;
 
   @ApiPropertyOptional({ description: '规则描述' })
   @IsOptional()
@@ -95,6 +107,17 @@ export class UpdateAlertRuleDto {
   @IsOptional()
   @IsNumber()
   tolerance?: number;
+
+  @ApiPropertyOptional({ description: '路线偏离判断方式', enum: DEVIATION_TYPES })
+  @IsOptional()
+  @IsIn(DEVIATION_TYPES)
+  deviationType?: string;
+
+  @ApiPropertyOptional({ description: '最大偏离距离（km）' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0)
+  maxDeviationDistance?: number;
 
   @ApiPropertyOptional({ description: '规则描述' })
   @IsOptional()

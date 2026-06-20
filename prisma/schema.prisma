@@ -15,6 +15,7 @@ model Container {
   destination  String
   currentRoute String?
   driverId     String?
+  routeWaypoints String?
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
@@ -35,6 +36,9 @@ model AlertRule {
   maxValue        Float?
   allowedDuration Int?
   tolerance       Float?
+
+  deviationType          String?
+  maxDeviationDistance   Float?
 
   description     String?
   createdAt       DateTime    @default(now())
@@ -63,29 +67,31 @@ model DeviceData {
 }
 
 model Alert {
-  id             String       @id @default(uuid())
-  containerId    String
-  alertType      String
-  alertLevel     String
-  status         String       @default("ACTIVE")
+  id               String       @id @default(uuid())
+  containerId      String
+  alertType        String
+  alertLevel       String
+  status           String       @default("ACTIVE")
 
-  startTime      DateTime     @default(now())
-  endTime        DateTime?
-  lastNotifyTime DateTime?
+  startTime        DateTime     @default(now())
+  endTime          DateTime?
+  lastNotifyTime   DateTime?
+  abnormalSince    DateTime?
 
-  currentValue   Float?
-  threshold      String?
-  durationSec    Int          @default(0)
+  currentValue     Float?
+  threshold        String?
+  durationSec      Int          @default(0)
 
-  suggestion     String?
-  escalationStep Int          @default(0)
+  suggestion       String?
+  escalationStep   Int          @default(0)
+  currentNotifyRole String      @default("DRIVER")
 
-  createdAt      DateTime     @default(now())
-  updatedAt      DateTime     @updatedAt
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
 
-  container      Container    @relation(fields: [containerId], references: [id])
-  notifications  Notification[]
-  receipts       Receipt[]
+  container        Container    @relation(fields: [containerId], references: [id])
+  notifications    Notification[]
+  receipts         Receipt[]
 }
 
 model Notification {
@@ -100,6 +106,7 @@ model Notification {
 
   content          String
   receiptLink      String?
+  escalationLevel  Int      @default(0)
 
   sentAt           DateTime?
   acknowledgedAt   DateTime?

@@ -14,6 +14,8 @@ import {
 export interface NotificationResult {
   notificationId: string;
   success: boolean;
+  role: RecipientRole;
+  escalationLevel: number;
 }
 
 @Injectable()
@@ -27,7 +29,7 @@ export class NotificationOrchestratorService {
   ) {}
 
   async processNewAlert(alert: Alert): Promise<NotificationResult[]> {
-    this.logger.log(`Processing notifications for alert: ${alert.id}`);
+    this.logger.log(`Processing initial notification for alert: ${alert.id}, sending to DRIVER only`);
 
     const container = await this.prisma.container.findUnique({
       where: { id: alert.containerId },
@@ -38,41 +40,49 @@ export class NotificationOrchestratorService {
       return [];
     }
 
+    const firstRole: RecipientRole = 'DRIVER';
     const contacts = await this.prisma.contact.findMany({
-      where: { enabled: true },
-      orderBy: [{ role: 'asc' }],
+      where: { role: firstRole, enabled: true },
     });
 
     const results: NotificationResult[] = [];
     const receiptLink = this.contentService.buildReceiptLink(alert.id);
 
-    for (const role of NOTIFICATION_ORDER) {
-      const roleContacts = contacts.filter((c) => c.role === role);
-
-      for (const contact of roleContacts) {
-        const result = await this.createAndSendNotification(
-          alert,
-          container,
-          contact,
-          this.getChannelForRole(role),
-          receiptLink,
-        );
-        if (result) {
-          results.push(result);
-        }
+    for (const contact of contacts) {
+      const result = await this.createAndSendNotification(
+        alert,
+        container,
+        contact,
+        this.getChannelForRole(firstRole),
+        receiptLink,
+        0,
+      );
+      if (result) {
+        results.push(result);
       }
     }
 
     await this.prisma.alert.update({
       where: { id: alert.id },
-      data: { lastNotifyTime: new Date() },
+      data: {
+        lastNotifyTime: new Date(),
+        escalationStep: 0,
+        currentNotifyRole: firstRole,
+      },
     });
 
     return results;
   }
 
   async escalateAlert(alert: Alert): Promise<NotificationResult[]> {
-    this.logger.log(`Escalating alert: ${alert.id}, step: ${alert.escalationStep + 1}`);
+    const nextStep = alert.escalationStep + 1;
+    if (nextStep >= NOTIFICATION_ORDER.length) {
+      this.logger.log(`Alert ${alert.id} has reached maximum escalation level, no more roles to notify`);
+      return [];
+    }
+
+    const nextRole = NOTIFICATION_ORDER[nextStep];
+    this.logger.log(`Escalating alert: ${alert.id}, from ${alert.currentNotifyRole} → ${nextRole} (step ${nextStep})`);
 
     const container = await this.prisma.container.findUnique({
       where: { id: alert.containerId },
@@ -82,13 +92,6 @@ export class NotificationOrchestratorService {
       return [];
     }
 
-    const nextStep = alert.escalationStep + 1;
-    if (nextStep >= NOTIFICATION_ORDER.length) {
-      this.logger.log(`Alert ${alert.id} has reached maximum escalation level`);
-      return [];
-    }
-
-    const nextRole = NOTIFICATION_ORDER[nextStep];
     const contacts = await this.prisma.contact.findMany({
       where: { role: nextRole, enabled: true },
     });
@@ -103,6 +106,7 @@ export class NotificationOrchestratorService {
         contact,
         this.getChannelForRole(nextRole),
         receiptLink,
+        nextStep,
         true,
       );
       if (result) {
@@ -114,6 +118,7 @@ export class NotificationOrchestratorService {
       where: { id: alert.id },
       data: {
         escalationStep: nextStep,
+        currentNotifyRole: nextRole,
         lastNotifyTime: new Date(),
       },
     });
@@ -150,7 +155,12 @@ export class NotificationOrchestratorService {
         });
       }
 
-      results.push({ notificationId: notification.id, success });
+      results.push({
+        notificationId: notification.id,
+        success,
+        role: notification.recipientRole as RecipientRole,
+        escalationLevel: notification.escalationLevel,
+      });
     }
 
     return results;
@@ -162,6 +172,7 @@ export class NotificationOrchestratorService {
     contact: Contact,
     channel: NotificationChannel,
     receiptLink: string,
+    escalationLevel: number,
     isEscalation: boolean = false,
   ): Promise<NotificationResult | null> {
     const existingNotification = await this.prisma.notification.findFirst({
@@ -195,7 +206,8 @@ export class NotificationOrchestratorService {
     }
 
     if (isEscalation) {
-      content = `【升级通知】\n${content}`;
+      const roleName = this.getRoleDisplayName(alert.currentNotifyRole as RecipientRole);
+      content = `【升级通知·${roleName}未处理】\n${content}`;
     }
 
     const notification = await this.prisma.notification.create({
@@ -208,6 +220,7 @@ export class NotificationOrchestratorService {
         channel,
         content,
         receiptLink,
+        escalationLevel,
       },
     });
 
@@ -222,10 +235,15 @@ export class NotificationOrchestratorService {
     });
 
     this.logger.log(
-      `Notification ${success ? 'sent' : 'failed'} to ${contact.name} via ${channel}`,
+      `Notification ${success ? 'sent' : 'failed'} to ${contact.name} (${contact.role}) via ${channel}, escalationLevel=${escalationLevel}`,
     );
 
-    return { notificationId: notification.id, success };
+    return {
+      notificationId: notification.id,
+      success,
+      role: contact.role as RecipientRole,
+      escalationLevel,
+    };
   }
 
   private getChannelForRole(role: RecipientRole): NotificationChannel {
@@ -243,17 +261,32 @@ export class NotificationOrchestratorService {
     }
   }
 
+  private getRoleDisplayName(role: RecipientRole): string {
+    switch (role) {
+      case 'DRIVER': return '司机';
+      case 'DISPATCHER': return '调度';
+      case 'CUSTOMER_SERVICE': return '货主客服';
+      case 'MANAGER': return '经理';
+      default: return role;
+    }
+  }
+
   async findPendingAlertsForEscalation(): Promise<Alert[]> {
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000);
 
-    return this.prisma.alert.findMany({
+    const alertsWithNoStopReceipt = await this.prisma.alert.findMany({
       where: {
-        status: { in: ['ACTIVE', 'ACKNOWLEDGED'] as AlertStatus[] },
-        OR: [
-          { lastNotifyTime: { lt: thirtyMinutesAgo } },
-          { lastNotifyTime: null },
-        ],
+        status: { in: ['ACTIVE'] as AlertStatus[] },
+        lastNotifyTime: { lt: thirtyMinutesAgo },
+        escalationStep: { lt: NOTIFICATION_ORDER.length - 1 },
+        receipts: {
+          none: {
+            status: { in: ['CONFIRMED', 'FALSE_ALARM', 'IN_PROGRESS'] },
+          },
+        },
       },
     });
+
+    return alertsWithNoStopReceipt;
   }
 }
